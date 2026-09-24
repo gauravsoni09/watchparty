@@ -1508,13 +1508,13 @@ app.use(
 // START SERVER
 // ======================================================
 
+const PORT = process.env.PORT || 3000;
+
 server.listen(
-  3000,
+  PORT,
   () => {
-
     console.log(
-      "Server running at http://localhost:3000"
+      `Server running at http://localhost:${PORT}`
     );
-
   }
 );
