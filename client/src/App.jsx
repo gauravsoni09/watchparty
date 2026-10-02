@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect } from "react";
 import { io } from "socket.io-client";
 
-const SERVER_URL = "http://localhost:3000";
+const SERVER_URL =
+  import.meta.env.VITE_SERVER_URL || "http://localhost:3000";
 
 // Keep one client across Vite hot updates so old managers do not keep reconnecting.
 const socket = globalThis.__watchPartySocket || io(SERVER_URL, {
