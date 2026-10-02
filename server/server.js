@@ -11,7 +11,23 @@ const streamifier = require("streamifier");
 
 const app = express();
 
-app.use(cors());
+const allowedOrigins = new Set(
+  (process.env.CLIENT_ORIGINS || "http://localhost:5173")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean)
+);
+
+function allowConfiguredOrigin(origin, callback) {
+  if (!origin || allowedOrigins.has(origin)) {
+    callback(null, true);
+    return;
+  }
+
+  callback(new Error("Origin is not allowed by CORS."));
+}
+
+app.use(cors({ origin: allowConfiguredOrigin }));
 
 app.get("/", (req, res) => {
   res.send("Watch Party Server is running!");
@@ -21,7 +37,7 @@ const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: "*"
+    origin: allowConfiguredOrigin
   }
 });
 
@@ -102,17 +118,23 @@ async function deleteFromCloudinary(
   try {
 
     if (assetId && versionId) {
+      try {
+        const backupResult =
+          await cloudinary.api.delete_backed_up_assets(
+            assetId,
+            [versionId]
+          );
 
-      const backupResult =
-        await cloudinary.api.delete_backed_up_assets(
-          assetId,
-          [versionId]
+        console.log(
+          "Cloudinary backup delete result:",
+          backupResult
         );
-
-      console.log(
-        "Cloudinary backup delete result:",
-        backupResult
-      );
+      } catch (error) {
+        console.error(
+          "Cloudinary backup delete failed:",
+          error.message
+        );
+      }
     }
 
     const result =
@@ -140,6 +162,7 @@ async function deleteFromCloudinary(
       error.message
     );
 
+    throw error;
   }
 }
 
@@ -331,7 +354,8 @@ app.post(
 
       const {
         roomId,
-        socketId
+        socketId,
+        hostToken
       } = req.body;
 
 
@@ -375,7 +399,9 @@ app.post(
       // ------------------------------
 
       if (
-        room.adminId !== socketId
+        room.adminId !== socketId ||
+        !hostToken ||
+        room.hostToken !== hostToken
       ) {
 
         return res.status(403).json({
@@ -464,11 +490,28 @@ app.post(
       // DELETE OLD VIDEO
       // ------------------------------
 
-      await deleteFromCloudinary(
-        previousPublicId,
-        previousAssetId,
-        previousVersionId
-      );
+      try {
+        await deleteFromCloudinary(
+          previousPublicId,
+          previousAssetId,
+          previousVersionId
+        );
+      } catch (deleteError) {
+        try {
+          await deleteFromCloudinary(
+            result.public_id,
+            result.asset_id,
+            result.version_id
+          );
+        } catch (cleanupError) {
+          console.error(
+            "Could not clean up the newly uploaded video after replacement failed:",
+            cleanupError.message
+          );
+        }
+
+        throw deleteError;
+      }
 
 
       // ------------------------------
@@ -897,6 +940,61 @@ io.on(
               data.videoName
           }
         );
+      }
+    );
+
+    // ==================================================
+    // REMOVE VIDEO
+    // ==================================================
+
+    socket.on(
+      "remove-video",
+      async (data, callback) => {
+        const roomId = socket.roomId;
+        const room = rooms.get(roomId);
+
+        if (!room) {
+          callback?.({
+            ok: false,
+            error: "Room does not exist."
+          });
+          return;
+        }
+
+        if (room.adminId !== socket.id) {
+          callback?.({
+            ok: false,
+            error: "Only the host can remove the video."
+          });
+          return;
+        }
+
+        try {
+          await deleteFromCloudinary(
+            room.videoFile,
+            room.videoAssetId,
+            room.videoVersionId
+          );
+        } catch (error) {
+          callback?.({
+            ok: false,
+            error: "Could not delete the video from Cloudinary. Please try again."
+          });
+          return;
+        }
+
+        room.videoName = "";
+        room.videoUrl = "";
+        room.videoFile = "";
+        room.videoAssetId = "";
+        room.videoVersionId = "";
+        room.playback = {
+          playing: false,
+          currentTime: 0
+        };
+
+        io.to(roomId).emit("video-removed");
+        callback?.({ ok: true });
       }
     );
 
@@ -1371,11 +1469,18 @@ io.on(
 
         if (room.members.size === 0) {
 
-          await deleteFromCloudinary(
-            room.videoFile,
-            room.videoAssetId,
-            room.videoVersionId
-          );
+          try {
+            await deleteFromCloudinary(
+              room.videoFile,
+              room.videoAssetId,
+              room.videoVersionId
+            );
+          } catch (error) {
+            console.error(
+              `Could not delete Cloudinary video for closed room ${roomId}:`,
+              error.message
+            );
+          }
 
 
           rooms.delete(
@@ -1417,6 +1522,19 @@ io.on(
 
             room.adminId =
               nextMember.socketId;
+
+            room.hostToken = crypto
+              .randomBytes(16)
+              .toString("hex");
+
+            io.sockets.sockets
+              .get(nextMember.socketId)
+              ?.emit(
+                "host-token",
+                {
+                  hostToken: room.hostToken
+                }
+              );
 
 
             io.to(roomId).emit(

@@ -3,11 +3,12 @@ import { io } from "socket.io-client";
 
 const SERVER_URL = "http://localhost:3000";
 
-// Allow WebSockets first with fallback to polling for minimum latency
-const socket = io(SERVER_URL, {
+// Keep one client across Vite hot updates so old managers do not keep reconnecting.
+const socket = globalThis.__watchPartySocket || io(SERVER_URL, {
   transports: ["websocket", "polling"],
   autoConnect: true
 });
+globalThis.__watchPartySocket = socket;
 
 // -----------------------------------------------------
 // Decorative sprocket-hole strip — a nod to film stock,
@@ -60,6 +61,7 @@ function App() {
   const [videoURL, setVideoURL] = useState("");
   const [videoName, setVideoName] = useState("");
   const [uploading, setUploading] = useState(false);
+  const [removingVideo, setRemovingVideo] = useState(false);
   const [autoplayBlocked, setAutoplayBlocked] = useState(false);
 
   // =====================================================
@@ -139,17 +141,15 @@ function App() {
           );
           setMembers(res.members || []);
           setHostId(res.hostId ?? null);
-
-          if (res.videoUrl) {
-            setVideoURL(res.videoUrl);
-            setVideoName(res.videoName || "");
-          }
+          setVideoURL(res.videoUrl || "");
+          setVideoName(res.videoName || "");
         }
       );
     }
 
     function handleDisconnect() {
       setConnected(false);
+      setRemovingVideo(false);
     }
 
     function handleConnectError(err) {
@@ -240,11 +240,15 @@ function App() {
       setVideoURL(data.videoUrl || "");
     }
 
+    function handleVideoRemoved() {
+      setVideoURL("");
+      setVideoName("");
+      setAutoplayBlocked(false);
+    }
+
     function handleSyncState(data) {
-      if (data.videoUrl) {
-        setVideoURL(data.videoUrl);
-        setVideoName(data.videoName || "");
-      }
+      setVideoURL(data.videoUrl || "");
+      setVideoName(data.videoName || "");
 
       const video = videoRef.current;
       if (!video || !data.playback) return;
@@ -277,6 +281,12 @@ function App() {
       setRoom((prev) => (prev ? { ...prev, isHost: data.socketId === socket.id } : prev));
     }
 
+    function handleHostToken(data) {
+      if (data?.hostToken) {
+        hostTokenRef.current = data.hostToken;
+      }
+    }
+
     function handleMemberJoined(data) {
       setMembers((prev) =>
         prev.some((m) => m.socketId === data.socketId)
@@ -305,9 +315,11 @@ function App() {
     socket.on("pause", handlePause);
     socket.on("seek", handleSeek);
     socket.on("video-ready", handleVideoReady);
+    socket.on("video-removed", handleVideoRemoved);
     socket.on("sync-state", handleSyncState);
     socket.on("chat-message", handleChatMessage);
     socket.on("host-changed", handleHostChanged);
+    socket.on("host-token", handleHostToken);
     socket.on("member-joined", handleMemberJoined);
     socket.on("member-left", handleMemberLeft);
     socket.on("kicked", handleKicked);
@@ -317,9 +329,11 @@ function App() {
       socket.off("pause", handlePause);
       socket.off("seek", handleSeek);
       socket.off("video-ready", handleVideoReady);
+      socket.off("video-removed", handleVideoRemoved);
       socket.off("sync-state", handleSyncState);
       socket.off("chat-message", handleChatMessage);
       socket.off("host-changed", handleHostChanged);
+      socket.off("host-token", handleHostToken);
       socket.off("member-joined", handleMemberJoined);
       socket.off("member-left", handleMemberLeft);
       socket.off("kicked", handleKicked);
@@ -406,6 +420,19 @@ function App() {
   // =====================================================
   // VIDEO UPLOAD HANDLER
   // =====================================================
+  function removeVideo() {
+    if (!room?.isHost || !videoURL || uploading || removingVideo) return;
+
+    setError("");
+    setRemovingVideo(true);
+    socket.emit("remove-video", { roomId: room.roomId }, (res) => {
+      setRemovingVideo(false);
+      if (!res?.ok) {
+        setError(res?.error || "Could not remove the video.");
+      }
+    });
+  }
+
   async function selectVideo(e) {
     if (!room?.isHost) return;
     const file = e.target.files?.[0];
@@ -418,13 +445,13 @@ function App() {
 
     setError("");
     setUploading(true);
-    setVideoName(file.name);
 
     try {
       const formData = new FormData();
       formData.append("video", file);
       formData.append("roomId", room.roomId);
       formData.append("socketId", socket.id);
+      formData.append("hostToken", hostTokenRef.current || "");
 
       const response = await fetch(`${SERVER_URL}/api/upload-video`, {
         method: "POST",
@@ -440,7 +467,6 @@ function App() {
       setVideoName(data.videoName);
     } catch (err) {
       setError(err.message || "Video upload failed.");
-      setVideoURL("");
     } finally {
       setUploading(false);
     }
@@ -799,11 +825,11 @@ function App() {
                 </div>
 
                 {room.isHost && (
-                  <div>
+                  <div className="flex items-center gap-2 flex-wrap">
                     <label
                       htmlFor="video-file"
                       className={`inline-block font-semibold px-5 py-2.5 rounded-sm transition text-sm ${
-                        uploading
+                        uploading || removingVideo
                           ? "bg-[var(--surface-muted)] text-[var(--text-faint)] cursor-not-allowed"
                           : "bg-[var(--accent)] text-[var(--accent-contrast)] hover:bg-[var(--accent-hover)] cursor-pointer"
                       }`}
@@ -815,9 +841,19 @@ function App() {
                       type="file"
                       accept="video/*"
                       className="hidden"
-                      disabled={uploading}
+                      disabled={uploading || removingVideo}
                       onChange={selectVideo}
                     />
+                    {videoURL && (
+                      <button
+                        type="button"
+                        onClick={removeVideo}
+                        disabled={uploading || removingVideo}
+                        className="border border-[var(--danger-border)] px-4 py-2.5 rounded-sm text-sm font-medium text-[var(--danger-text)] hover:border-[var(--status-off)] disabled:opacity-50 disabled:cursor-not-allowed transition"
+                      >
+                        {removingVideo ? "Removing…" : "Remove video"}
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
