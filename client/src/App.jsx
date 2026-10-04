@@ -62,6 +62,7 @@ function App() {
   const [videoURL, setVideoURL] = useState("");
   const [videoName, setVideoName] = useState("");
   const [uploading, setUploading] = useState(false);
+  const [pendingVideo, setPendingVideo] = useState(null);
   const [removingVideo, setRemovingVideo] = useState(false);
   const [autoplayBlocked, setAutoplayBlocked] = useState(false);
 
@@ -83,6 +84,7 @@ function App() {
   // REFS
   // =====================================================
   const videoRef = useRef(null);
+  const uploadInProgressRef = useRef(false);
   const createNameRef = useRef(null);
   const joinNameRef = useRef(null);
   const roomCodeRef = useRef(null);
@@ -434,9 +436,10 @@ function App() {
     });
   }
 
-  async function selectVideo(e) {
+  function selectVideo(e) {
     if (!room?.isHost) return;
     const file = e.target.files?.[0];
+    e.target.value = "";
     if (!file) return;
 
     if (!file.type.startsWith("video/")) {
@@ -445,6 +448,14 @@ function App() {
     }
 
     setError("");
+    setPendingVideo(file);
+  }
+
+  async function uploadVideo(file) {
+    if (!room?.isHost || uploadInProgressRef.current) return;
+
+    uploadInProgressRef.current = true;
+    setPendingVideo(null);
     setUploading(true);
 
     try {
@@ -469,8 +480,14 @@ function App() {
     } catch (err) {
       setError(err.message || "Video upload failed.");
     } finally {
+      uploadInProgressRef.current = false;
       setUploading(false);
     }
+  }
+
+  function confirmVideoUpload() {
+    if (!pendingVideo || uploadInProgressRef.current) return;
+    void uploadVideo(pendingVideo);
   }
 
   // =====================================================
@@ -642,6 +659,66 @@ function App() {
     return (
       <div className="wt-app font-body min-h-screen w-full overflow-x-hidden bg-[var(--bg)] text-[var(--text)] transition-colors duration-300" data-theme={theme}>
         {fontStyles}
+        {pendingVideo && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 sm:p-6"
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setPendingVideo(null);
+            }}
+          >
+            <section
+              role="alertdialog"
+              aria-modal="true"
+              aria-labelledby="upload-warning-title"
+              aria-describedby="upload-warning-message"
+              className="w-full max-w-lg overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--surface)] shadow-2xl"
+            >
+              <div className="h-1.5 bg-[var(--danger-text)]" />
+              <div className="p-5 sm:p-7">
+                <div className="mb-5 flex items-center gap-3">
+                  <span
+                    aria-hidden="true"
+                    className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[var(--danger-bg)] text-xl text-[var(--danger-text)]"
+                  >
+                    ⚠️
+                  </span>
+                  <h2 id="upload-warning-title" className="font-display text-xl font-bold sm:text-2xl">
+                    Important Notice
+                  </h2>
+                </div>
+                <div id="upload-warning-message" className="space-y-4 text-sm leading-6 text-[var(--text-muted)] sm:text-base">
+                  <p>
+                    Sexual or sexually explicit content is strictly prohibited on this platform. Uploading such content may expose you to serious legal consequences and may result in account suspension or termination.
+                  </p>
+                  <p>
+                    By continuing, you confirm that your video complies with applicable laws and Cloudinary&apos;s content policies.
+                  </p>
+                  <p className="font-semibold text-[var(--text)]">
+                    Do you want to continue with this upload?
+                  </p>
+                </div>
+                <div className="mt-7 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+                  <button
+                    type="button"
+                    autoFocus
+                    onClick={() => setPendingVideo(null)}
+                    className="rounded-sm border border-[var(--border)] px-5 py-3 text-sm font-semibold text-[var(--text-muted)] transition hover:border-[var(--danger-border)] hover:bg-[var(--danger-bg)] hover:text-[var(--danger-text)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+                  >
+                    Cancel Upload
+                  </button>
+                  <button
+                    type="button"
+                    onClick={confirmVideoUpload}
+                    disabled={uploading}
+                    className="rounded-sm bg-[var(--accent)] px-5 py-3 text-sm font-semibold text-[var(--accent-contrast)] transition hover:bg-[var(--accent-hover)] disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+                  >
+                    I Understand, Continue
+                  </button>
+                </div>
+              </div>
+            </section>
+          </div>
+        )}
         <div className="max-w-7xl mx-auto px-4 py-5 sm:px-6 sm:py-8 md:px-10">
           {/* TOP HEADER */}
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between mb-5 sm:mb-6">
